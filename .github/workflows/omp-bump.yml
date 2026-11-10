@@ -1,0 +1,56 @@
+# Follows omp's stable channel: when a new omp ships, bump the chart appVersion
+# (= image tag) and the chart patch version, tag the release and run CI on the tag,
+# which builds/signs the image and publishes the chart.
+name: omp bump
+
+on:
+  schedule:
+    - cron: "17 */3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write # dispatch CI: pushes made with GITHUB_TOKEN don't trigger workflows
+
+concurrency:
+  group: omp-bump
+
+env:
+  CHART: charts/omp-agent/Chart.yaml
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Resolve latest stable omp
+        id: v
+        run: |
+          latest=$(curl -fsSL --retry 3 'https://build.stencil.so/api/products/omp/latest/linux-x86_64?channel=stable' | jq -r '.build.version')
+          echo "$latest" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
+          current=$(sed -n 's/^appVersion: "\(.*\)"/\1/p' "$CHART")
+          chart=$(sed -n 's/^version: //p' "$CHART")
+          last=$(git tag --list 'v*' --sort=-v:refname | head -1)
+          base=${last#v}; base=${base:-$chart}
+          next="${base%.*}.$(( ${base##*.} + 1 ))"
+          echo "latest=$latest current=$current next=$next"
+          { echo "latest=$latest"; echo "current=$current"; echo "next=$next"; } >> "$GITHUB_OUTPUT"
+      - name: Bump, tag and dispatch CI
+        if: steps.v.outputs.latest != steps.v.outputs.current
+        env:
+          LATEST: ${{ steps.v.outputs.latest }}
+          NEXT: ${{ steps.v.outputs.next }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          sed -i -E \
+            -e "s/^version: .*/version: ${NEXT}/" \
+            -e "s/^appVersion: .*/appVersion: \"${LATEST}\"/" "$CHART"
+          sed -i -E "s/^ARG OMP_VERSION=.*/ARG OMP_VERSION=${LATEST}/" image/Dockerfile
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "build: bump omp to ${LATEST}"
+          git tag -a "v${NEXT}" -m "v${NEXT}: omp ${LATEST}"
+          git push origin HEAD "v${NEXT}"
+          gh workflow run ci.yml --ref "v${NEXT}"
