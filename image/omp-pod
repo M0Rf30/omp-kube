@@ -1,13 +1,13 @@
 #!/bin/bash
 # omp-pod: entrypoint of the omp agent pod.
-#   omp-pod           keep an interactive omp alive inside tmux (+ optional loopback sshd)
+#   omp-pod           keep an interactive omp alive under dtach (+ optional loopback sshd)
 #   omp-pod --sync    init step: mirror the agent-config git repo into ~/.omp/agent and
 #                     install marketplaces, plugins and registry skills
-#   omp-pod --window  (internal) the tmux window loop
+#   omp-pod --window  (internal) the loop running inside the dtach PTY
 set -euo pipefail
 
 : "${OMP_WORKDIR:=$HOME/workspace}"
-: "${OMP_TMUX_SESSION:=omp}"
+: "${OMP_SOCKET:=/tmp/omp.sock}"
 : "${OMP_ARGS:=}"
 : "${SSHD_PORT:=}"
 : "${SSHD_AUTHORIZED_KEYS:=/etc/omp-pod/authorized_keys}"
@@ -110,6 +110,14 @@ esac
 
 mkdir -p "$OMP_WORKDIR" "$agent_dir"
 
+# Latest stable omp on the home volume, ahead of the image's pinned one on PATH.
+if [[ "${OMP_AUTO_UPDATE:-false}" == "true" ]]; then
+	export PATH="$HOME/.local/bin:$PATH"
+	if ! curl -fsSL https://omp.sh/install | PI_INSTALL_DIR="$HOME/.local/bin" sh -s -- --binary; then
+		warn "omp auto-update failed; using $(command -v omp)"
+	fi
+fi
+
 # The config repo's config.yml is an overlay below the chart's (later entries win).
 if [[ -n "$OMP_SYNC_REPO" && -f "$OMP_SYNC_PATH/config.yml" ]]; then
 	export PI_CONFIG_FILES="$OMP_SYNC_PATH/config.yml${PI_CONFIG_FILES:+:$PI_CONFIG_FILES}"
@@ -138,13 +146,7 @@ if [[ -n "$SSHD_PORT" ]]; then
 		-o PermitUserEnvironment=no &
 fi
 
-tmux new-session -d -s "$OMP_TMUX_SESSION" -x 220 -y 50 -c "$OMP_WORKDIR" -e "PI_CONFIG_FILES=${PI_CONFIG_FILES:-}" "$0 --window"
-tmux set-option -t "$OMP_TMUX_SESSION" -g history-limit 50000 >/dev/null
-
-trap 'tmux kill-server 2>/dev/null || true; exit 0' TERM INT
-
-# The container lives as long as the tmux session; closing it restarts the pod.
-while tmux has-session -t "$OMP_TMUX_SESSION" 2>/dev/null; do
-	sleep 5 &
-	wait $!
-done
+# dtach holds the PTY and passes bytes through untouched (keys, images, colours).
+# Attach with `omp-attach`; detach with Ctrl-\. The container lives as long as the loop.
+rm -f "$OMP_SOCKET"
+exec dtach -N "$OMP_SOCKET" -r winch -z "$0" --window
