@@ -1,0 +1,150 @@
+#!/bin/bash
+# omp-pod: entrypoint of the omp agent pod.
+#   omp-pod           keep an interactive omp alive inside tmux (+ optional loopback sshd)
+#   omp-pod --sync    init step: mirror the agent-config git repo into ~/.omp/agent and
+#                     install marketplaces, plugins and registry skills
+#   omp-pod --window  (internal) the tmux window loop
+set -euo pipefail
+
+: "${OMP_WORKDIR:=$HOME/workspace}"
+: "${OMP_TMUX_SESSION:=omp}"
+: "${OMP_ARGS:=}"
+: "${SSHD_PORT:=}"
+: "${SSHD_AUTHORIZED_KEYS:=/etc/omp-pod/authorized_keys}"
+: "${OMP_SYNC_REPO:=}"
+: "${OMP_SYNC_REF:=}"
+: "${OMP_SYNC_PATH:=$HOME/.omp-config}"
+: "${OMP_SYNC_LINKS:=}"         # newline-separated "repo/path=agent/path"
+: "${OMP_MARKETPLACES:=}"       # newline-separated marketplace sources
+: "${OMP_PLUGINS:=}"            # newline-separated plugin specs
+: "${OMP_REGISTRY_SKILLS:=}"    # newline-separated Skillshare specs
+
+agent_dir="$HOME/.omp/agent"
+
+warn() { echo "omp-pod: $*" >&2; }
+
+# GitHub token per invocation through a credential helper; never written to .git/config.
+git_auth() {
+	# shellcheck disable=SC2016 # expanded by git's helper shell, not here
+	git -c credential.helper= \
+		-c 'credential.helper=!f() { [ -n "${GH_TOKEN:-}" ] && printf "username=x-access-token\npassword=%s\n" "$GH_TOKEN"; }; f' \
+		"$@"
+}
+
+sync_repo() {
+	if [[ -d "$OMP_SYNC_PATH/.git" ]]; then
+		if git_auth -C "$OMP_SYNC_PATH" fetch -q --depth 1 origin "${OMP_SYNC_REF:-HEAD}"; then
+			git -C "$OMP_SYNC_PATH" reset -q --hard FETCH_HEAD
+			git -C "$OMP_SYNC_PATH" clean -fdq
+		else
+			warn "config repo update failed; keeping the existing checkout"
+		fi
+	else
+		rm -rf "$OMP_SYNC_PATH"
+		git_auth clone -q --depth 1 ${OMP_SYNC_REF:+--branch "$OMP_SYNC_REF"} "$OMP_SYNC_REPO" "$OMP_SYNC_PATH" ||
+			{ warn "config repo clone failed; starting without it"; return 0; }
+	fi
+
+	local line src dst
+	while IFS= read -r line; do
+		[[ -n "$line" ]] || continue
+		src="$OMP_SYNC_PATH/${line%%=*}"
+		dst="$agent_dir/${line#*=}"
+		if [[ ! -e "$src" ]]; then
+			# Drop links whose source left the repo.
+			[[ -L "$dst" && "$(readlink "$dst")" == "$src" ]] && rm -f "$dst"
+			continue
+		fi
+		mkdir -p "$(dirname "$dst")"
+		if [[ -e "$dst" && ! -L "$dst" ]]; then
+			mv "$dst" "$dst.pre-sync.$(date +%Y%m%d%H%M%S)"
+		fi
+		ln -sfn "$src" "$dst"
+		echo "linked $dst -> $src"
+	done <<<"$OMP_SYNC_LINKS"
+}
+
+install_packages() {
+	local spec out
+	while IFS= read -r spec; do
+		[[ -n "$spec" ]] || continue
+		omp plugin marketplace add "$spec" >/dev/null 2>&1 || true
+	done <<<"$OMP_MARKETPLACES"
+	[[ -z "$OMP_MARKETPLACES" ]] || omp plugin marketplace update || warn "marketplace update failed"
+
+	while IFS= read -r spec; do
+		[[ -n "$spec" ]] || continue
+		if ! out=$(omp plugin install "$spec" 2>&1); then
+			[[ "$out" == *"already installed"* ]] || warn "plugin install failed: $spec: $out"
+			continue
+		fi
+		echo "$out"
+	done <<<"$OMP_PLUGINS"
+
+	while IFS= read -r spec; do
+		[[ -n "$spec" ]] || continue
+		omp skill install -g -y "$spec" || warn "skill install failed: $spec"
+	done <<<"$OMP_REGISTRY_SKILLS"
+}
+
+case "${1:-}" in
+--sync)
+	mkdir -p "$agent_dir"
+	[[ -z "$OMP_SYNC_REPO" ]] || sync_repo
+	install_packages
+	exit 0
+	;;
+--window)
+	# omp resumes the latest session after a pod restart; when it exits,
+	# Enter drops to a shell, otherwise it restarts.
+	cd "$OMP_WORKDIR"
+	while true; do
+		# shellcheck disable=SC2086 # OMP_ARGS is a flag list
+		omp --continue $OMP_ARGS || true
+		if read -r -t 5 -p "omp exited. Enter = shell, restarting in 5s… "; then
+			exec bash -l
+		fi
+	done
+	;;
+esac
+
+mkdir -p "$OMP_WORKDIR" "$agent_dir"
+
+# The config repo's config.yml is an overlay below the chart's (later entries win).
+if [[ -n "$OMP_SYNC_REPO" && -f "$OMP_SYNC_PATH/config.yml" ]]; then
+	export PI_CONFIG_FILES="$OMP_SYNC_PATH/config.yml${PI_CONFIG_FILES:+:$PI_CONFIG_FILES}"
+fi
+
+if [[ -n "$SSHD_PORT" ]]; then
+	hostkeys="$HOME/.ssh-host"
+	mkdir -p "$hostkeys"
+	[[ -f "$hostkeys/ssh_host_ed25519_key" ]] ||
+		ssh-keygen -q -t ed25519 -N '' -f "$hostkeys/ssh_host_ed25519_key"
+	# Loopback only: reachable through the Tailscale sidecar or `kubectl port-forward`.
+	/usr/sbin/sshd -D -e -f /dev/null \
+		-o ListenAddress=127.0.0.1 \
+		-o Port="$SSHD_PORT" \
+		-o HostKey="$hostkeys/ssh_host_ed25519_key" \
+		-o PidFile="/tmp/sshd.pid" \
+		-o AuthorizedKeysFile="$SSHD_AUTHORIZED_KEYS" \
+		-o StrictModes=no \
+		-o UsePAM=no \
+		-o PasswordAuthentication=no \
+		-o KbdInteractiveAuthentication=no \
+		-o PermitRootLogin=no \
+		-o AllowUsers="$(id -un)" \
+		-o AllowTcpForwarding=no \
+		-o X11Forwarding=no \
+		-o PermitUserEnvironment=no &
+fi
+
+tmux new-session -d -s "$OMP_TMUX_SESSION" -x 220 -y 50 -c "$OMP_WORKDIR" -e "PI_CONFIG_FILES=${PI_CONFIG_FILES:-}" "$0 --window"
+tmux set-option -t "$OMP_TMUX_SESSION" -g history-limit 50000 >/dev/null
+
+trap 'tmux kill-server 2>/dev/null || true; exit 0' TERM INT
+
+# The container lives as long as the tmux session; closing it restarts the pod.
+while tmux has-session -t "$OMP_TMUX_SESSION" 2>/dev/null; do
+	sleep 5 &
+	wait $!
+done
