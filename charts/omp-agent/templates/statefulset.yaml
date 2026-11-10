@@ -1,0 +1,209 @@
+{{- if and .Values.tailscale.enabled (not .Values.ssh.enabled) }}{{ fail "tailscale.enabled requires ssh.enabled (the sidecar forwards tailnet port 22 to the loopback sshd)" }}{{ end }}
+{{- if and .Values.tailscale.enabled (not .Values.tailscale.authKeySecret.name) }}{{ fail "tailscale.authKeySecret.name is required when tailscale.enabled" }}{{ end }}
+{{- if and .Values.ssh.enabled (not .Values.ssh.authorizedKeys) }}{{ fail "ssh.authorizedKeys is required when ssh.enabled" }}{{ end }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "omp-agent.fullname" . }}
+  labels:
+    {{- include "omp-agent.labels" . | nindent 4 }}
+spec:
+  # One agent per release: a second replica would be an unrelated, empty agent.
+  replicas: 1
+  serviceName: {{ include "omp-agent.fullname" . }}
+  selector:
+    matchLabels:
+      {{- include "omp-agent.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "omp-agent.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "omp-agent.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- $ac := .Values.agentConfig }}
+      {{- if or $ac.git.repo $ac.marketplaces $ac.plugins $ac.registrySkills }}
+      initContainers:
+        - name: agent-config
+          image: {{ include "omp-agent.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["--sync"]
+          env:
+            {{- include "omp-agent.syncEnv" . | nindent 12 }}
+            - name: OMP_SYNC_LINKS
+              value: |
+                {{- range $src, $dst := $ac.links }}
+                {{- if $dst }}
+                {{ $src }}={{ $dst }}
+                {{- end }}
+                {{- end }}
+            - name: OMP_MARKETPLACES
+              value: {{ join "\n" $ac.marketplaces | quote }}
+            - name: OMP_PLUGINS
+              value: {{ join "\n" $ac.plugins | quote }}
+            - name: OMP_REGISTRY_SKILLS
+              value: {{ join "\n" $ac.registrySkills | quote }}
+          {{- with .Values.omp.existingSecret }}
+          envFrom:
+            - secretRef:
+                name: {{ . }}
+          {{- end }}
+          volumeMounts:
+            - name: home
+              mountPath: /home/agent
+            - name: tmp
+              mountPath: /tmp
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+      {{- end }}
+      containers:
+        - name: omp
+          image: {{ include "omp-agent.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          # tmux needs a terminal for `kubectl exec -it … tmux attach`.
+          stdin: true
+          tty: true
+          env:
+            - name: PI_CONFIG_FILES
+              value: /etc/omp-pod/config.yml
+            - name: OMP_WORKDIR
+              value: {{ .Values.omp.workdir | quote }}
+            - name: OMP_TMUX_SESSION
+              value: {{ .Values.omp.tmuxSession | quote }}
+            - name: OMP_ARGS
+              value: {{ join " " .Values.omp.args | quote }}
+            {{- include "omp-agent.syncEnv" . | nindent 12 }}
+            {{- if .Values.ssh.enabled }}
+            - name: SSHD_PORT
+              value: {{ .Values.ssh.port | quote }}
+            - name: SSHD_AUTHORIZED_KEYS
+              value: /etc/omp-pod/authorized_keys
+            {{- end }}
+            {{- with .Values.omp.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.omp.existingSecret }}
+          envFrom:
+            - secretRef:
+                name: {{ . }}
+          {{- end }}
+          volumeMounts:
+            - name: home
+              mountPath: /home/agent
+            - name: config
+              mountPath: /etc/omp-pod
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+        {{- if .Values.tailscale.enabled }}
+        - name: tailscale
+          image: "{{ .Values.tailscale.image.repository }}:{{ .Values.tailscale.image.tag }}"
+          imagePullPolicy: {{ .Values.tailscale.image.pullPolicy }}
+          env:
+            - name: TS_USERSPACE
+              value: "true"
+            # State lives in the volume, not a Kubernetes Secret: the pod has no API token.
+            - name: TS_KUBE_SECRET
+              value: ""
+            - name: TS_STATE_DIR
+              value: /var/lib/tailscale
+            - name: TS_SOCKET
+              value: /tmp/tailscaled.sock
+            - name: TS_HOSTNAME
+              value: {{ .Values.tailscale.hostname | quote }}
+            - name: TS_SERVE_CONFIG
+              value: /etc/omp-pod/serve.json
+            - name: TS_AUTH_ONCE
+              value: "true"
+            {{- with .Values.tailscale.extraArgs }}
+            - name: TS_EXTRA_ARGS
+              value: {{ . | quote }}
+            {{- end }}
+            - name: TS_AUTHKEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.tailscale.authKeySecret.name }}
+                  key: {{ .Values.tailscale.authKeySecret.key }}
+          volumeMounts:
+            - name: home
+              mountPath: /var/lib/tailscale
+              subPath: .tailscale
+            - name: config
+              mountPath: /etc/omp-pod
+              readOnly: true
+            - name: tailscale-tmp
+              mountPath: /tmp
+          resources:
+            {{- toYaml .Values.tailscale.resources | nindent 12 }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+        {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "omp-agent.fullname" . }}
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.tailscale.enabled }}
+        - name: tailscale-tmp
+          emptyDir: {}
+        {{- end }}
+        {{- if not .Values.persistence.enabled }}
+        - name: home
+          emptyDir: {}
+        {{- else if .Values.persistence.existingClaim }}
+        - name: home
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim }}
+        {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) }}
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  volumeClaimTemplates:
+    - metadata:
+        name: home
+        labels:
+          {{- include "omp-agent.selectorLabels" . | nindent 10 }}
+      spec:
+        accessModes:
+          {{- toYaml .Values.persistence.accessModes | nindent 10 }}
+        {{- with .Values.persistence.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.size }}
+  {{- end }}

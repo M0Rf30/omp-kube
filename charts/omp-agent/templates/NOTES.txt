@@ -1,0 +1,40 @@
+{{- $pod := printf "%s-0" (include "omp-agent.fullname" .) -}}
+omp runs in tmux session "{{ .Values.omp.tmuxSession }}" in pod {{ $pod }} (namespace {{ .Release.Namespace }}).
+
+Attach to the TUI:
+  kubectl -n {{ .Release.Namespace }} exec -it {{ $pod }} -c omp -- tmux attach -t {{ .Values.omp.tmuxSession }}
+  (detach with Ctrl-b d; quitting omp restarts it after 5s unless you press Enter for a shell)
+
+{{- if .Values.omp.existingSecret }}
+Provider credentials come from Secret "{{ .Values.omp.existingSecret }}".
+{{- else }}
+No omp.existingSecret set: log in once from the TUI (/login), or import your laptop's logins:
+  omp auth export > auth.json
+  kubectl -n {{ .Release.Namespace }} exec -i {{ $pod }} -c omp -- omp auth import < auth.json
+  rm auth.json
+{{- end }}
+
+{{- if ne (toString (dig "collab" "autoStart" "off" (default dict .Values.omp.config))) "off" }}
+
+Collab ({{ dig "collab" "autoStart" "" .Values.omp.config }}) is hosted for every session. Get the current link
+(it changes on /new, /resume, /fork and pod restarts):
+  kubectl -n {{ .Release.Namespace }} exec {{ $pod }} -c omp -- omp collab list
+  kubectl -n {{ .Release.Namespace }} exec {{ $pod }} -c omp -- omp collab link <instanceId|pid>
+Open the https link in a browser/phone, or from your laptop: omp join "<link>"
+{{- end }}
+
+{{- if .Values.ssh.enabled }}
+{{- if .Values.tailscale.enabled }}
+
+SSH over the tailnet:
+  ssh -t agent@{{ .Values.tailscale.hostname }} tmux attach -t {{ .Values.omp.tmuxSession }}
+{{- else }}
+
+SSH (loopback only) via port-forward:
+  kubectl -n {{ .Release.Namespace }} port-forward {{ $pod }} 2222:{{ .Values.ssh.port }}
+  ssh -t -p 2222 agent@127.0.0.1 tmux attach -t {{ .Values.omp.tmuxSession }}
+{{- end }}
+{{- end }}
+
+Move a session between laptop and pod:
+  omp session pack / omp session unpack

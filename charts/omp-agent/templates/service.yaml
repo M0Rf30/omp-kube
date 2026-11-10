@@ -1,0 +1,11 @@
+# Governing headless Service required by the StatefulSet; the pod exposes no ports.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "omp-agent.fullname" . }}
+  labels:
+    {{- include "omp-agent.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  selector:
+    {{- include "omp-agent.selectorLabels" . | nindent 4 }}

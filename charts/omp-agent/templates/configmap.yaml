@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "omp-agent.fullname" . }}
+  labels:
+    {{- include "omp-agent.labels" . | nindent 4 }}
+data:
+  config.yml: |
+    {{- toYaml (default dict .Values.omp.config) | nindent 4 }}
+  {{- if .Values.ssh.enabled }}
+  authorized_keys: |
+    {{- range .Values.ssh.authorizedKeys }}
+    {{ . }}
+    {{- end }}
+  {{- end }}
+  {{- if .Values.tailscale.enabled }}
+  serve.json: |
+    {{- dict "TCP" (dict "22" (dict "TCPForward" (printf "127.0.0.1:%d" (int .Values.ssh.port)))) | toJson | nindent 4 }}
+  {{- end }}

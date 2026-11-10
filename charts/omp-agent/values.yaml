@@ -1,0 +1,172 @@
+image:
+  repository: ghcr.io/m0rf30/omp-agent
+  # -- Defaults to the chart appVersion (the omp version in the image).
+  tag: ""
+  # -- Optional digest (sha256:...); takes precedence over tag.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+omp:
+  # -- Extra flags for the interactive omp, e.g. ["--model", "opus", "--thinking", "high"].
+  args: []
+  # -- Working directory omp starts in (inside the persistent home volume).
+  workdir: /home/agent/workspace
+  # -- tmux session name holding omp.
+  tmuxSession: omp
+  # -- Settings overlay loaded through PI_CONFIG_FILES (same keys as ~/.omp/agent/config.yml).
+  # Overrides the persistent global config; /settings changes to these keys won't stick.
+  config:
+    collab:
+      # -- "control": every session hosts a full-control Collab room on start;
+      # "view": read-only rooms; "off": run /collab by hand.
+      autoStart: control
+      relayUrl: wss://my.omp.sh
+  # -- Existing Secret exposed as environment (provider keys such as ANTHROPIC_API_KEY,
+  # OPENAI_API_KEY, GH_TOKEN). OAuth logins go through `omp auth import` and persist in the volume.
+  existingSecret: ""
+  # -- Extra container environment.
+  env: []
+
+agentConfig:
+  git:
+    # -- Git repo mirroring parts of your ~/.omp/agent (skills, agents, rules, AGENTS.md, ...).
+    # An init container clones it on first start and hard-resets it to the remote on every
+    # start (local edits in the checkout are discarded), then symlinks `links` into
+    # ~/.omp/agent. Private GitHub repos over https use GH_TOKEN from omp.existingSecret.
+    repo: ""
+    # -- Branch or tag; empty = remote default branch.
+    ref: ""
+    # -- Checkout location (on the home volume). A `config.yml` at the repo root is loaded as a
+    # settings overlay below omp.config (omp.config wins on conflicts).
+    path: /home/agent/.omp-config
+  # -- Repo path -> path under ~/.omp/agent; every user-level omp customization point is listed.
+  # Entries missing from the repo are skipped; an existing non-symlink target is moved aside to
+  # `<target>.pre-sync.<timestamp>`. Set an entry to null to disable it.
+  # Not synced on purpose: credentials (agent.db, secrets.yml, .env) and omp-written state
+  # (sessions, memories, managed-skills, config.yml: use the repo's config.yml overlay instead).
+  # mcp.json is safe in git when tokens use ${VAR} placeholders fed by omp.existingSecret.
+  links:
+    # Skills (<name>/SKILL.md), custom task agents, slash commands, prompt templates.
+    skills: skills
+    agents: agents
+    commands: commands
+    prompts: prompts
+    # Rules (rules/*.md|mdc) and the always-apply RULES.md.
+    rules: rules
+    RULES.md: RULES.md
+    # Context and system prompt.
+    AGENTS.md: AGENTS.md
+    SYSTEM.md: SYSTEM.md
+    SYSTEM_TEMPLATE.md: SYSTEM_TEMPLATE.md
+    APPEND_SYSTEM.md: APPEND_SYSTEM.md
+    TITLE_SYSTEM.md: TITLE_SYSTEM.md
+    WATCHDOG.md: WATCHDOG.md
+    # Code: hooks (hooks/pre|post), custom tools, extensions.
+    hooks: hooks
+    tools: tools
+    extensions: extensions
+    # Providers/models, MCP servers, LSP servers, themes, keybindings.
+    models.yml: models.yml
+    mcp.json: mcp.json
+    lsp.json: lsp.json
+    themes: themes
+    keybindings.yml: keybindings.yml
+  # -- Plugin marketplaces to add (`owner/repo`, git URL), e.g. ["M0Rf30/claude-plugins"].
+  marketplaces: []
+  # -- Plugins to install: `name@marketplace`, npm packages or git URLs, e.g. ["yap@m0rf30"].
+  plugins: []
+  # -- Skillshare registry skills (skills.omp.sh) installed user-globally.
+  registrySkills: []
+
+persistence:
+  # -- Persist /home/agent: sessions, auth, memory, repos, caches. Disabled = emptyDir (lost on restart).
+  enabled: true
+  # -- Use an existing PVC instead of the StatefulSet volumeClaimTemplate.
+  existingClaim: ""
+  storageClass: ""
+  accessModes: [ReadWriteOnce]
+  size: 20Gi
+
+ssh:
+  # -- Run sshd bound to 127.0.0.1 inside the agent container (key auth only).
+  # Reach it through the Tailscale sidecar or `kubectl port-forward`.
+  enabled: false
+  port: 2222
+  # -- Public keys allowed to log in as the agent user.
+  authorizedKeys: []
+
+tailscale:
+  # -- Join the tailnet (userspace networking) and forward tailnet port 22 to the loopback sshd.
+  # Requires ssh.enabled.
+  enabled: false
+  image:
+    repository: tailscale/tailscale
+    tag: v1.104.4
+    pullPolicy: IfNotPresent
+  # -- Tailnet machine name.
+  hostname: omp-agent
+  # -- Existing Secret holding a Tailscale auth key (reusable or tagged, ideally ephemeral=false).
+  authKeySecret:
+    name: ""
+    key: TS_AUTHKEY
+  # -- Extra `tailscale up` flags, e.g. "--advertise-tags=tag:omp".
+  extraArgs: ""
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+networkPolicy:
+  # -- Deny all ingress; allow DNS plus egress to the internet except private,
+  # link-local (cloud metadata) and CGNAT ranges, so the agent can't reach in-cluster services.
+  enabled: true
+  # -- CIDRs excluded from internet egress.
+  blockedCIDRs:
+    - 10.0.0.0/8
+    - 172.16.0.0/12
+    - 192.168.0.0/16
+    - 100.64.0.0/10
+    - 169.254.0.0/16
+  # -- Extra raw egress rules (e.g. an in-cluster git server or registry).
+  extraEgress: []
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+  fsGroupChangePolicy: OnRootMismatch
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 1Gi
+  limits:
+    memory: 8Gi
+
+terminationGracePeriodSeconds: 30
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
