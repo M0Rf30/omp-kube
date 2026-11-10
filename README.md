@@ -29,6 +29,8 @@ Images (`ghcr.io/m0rf30/omp-agent:<omp version>`, amd64/arm64) and charts are bu
 1. **Releases:** `.github/workflows/omp-bump.yml` checks omp's stable channel every 3 hours. On a new version it bumps `appVersion` and the chart patch version, commits `build: bump omp to X`, tags `vX.Y.Z` and dispatches CI, which builds/signs the image and publishes the chart.
 2. **Rollout:** deploy with ArgoCD following the newest chart ([`deploy/argocd-application.yaml`](deploy/argocd-application.yaml), `targetRevision: "0.*"`, automated sync). New release → new image → pod restarts → `omp --continue` resumes the session. A turn running at that moment is interrupted.
 
+Dependabot PRs (actions, base image) are squash-merged automatically once CI passes on them, and `main` is rebuilt.
+
 Without ArgoCD, `omp.autoUpdate: true` installs the latest stable omp into the home volume on every pod start instead (picked up on the next restart; not signed by this repo's CI).
 
 ## Access

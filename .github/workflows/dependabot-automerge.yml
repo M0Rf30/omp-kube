@@ -1,0 +1,34 @@
+# Merges Dependabot PRs once CI passed on them, then rebuilds main: merges made with
+# GITHUB_TOKEN don't trigger push workflows.
+name: Dependabot auto-merge
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+  actions: write
+
+jobs:
+  merge:
+    if: >-
+      github.event.workflow_run.event == 'pull_request' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.actor.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Squash-merge and rebuild main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          pr=$(gh pr list -R "$REPO" --head "$BRANCH" --state open --json number,headRefOid \
+            --jq ".[] | select(.headRefOid == \"$SHA\") | .number")
+          [ -n "$pr" ] || { echo "no open PR at $SHA"; exit 0; }
+          gh pr merge -R "$REPO" "$pr" --squash --match-head-commit "$SHA"
+          gh workflow run ci.yml -R "$REPO" --ref main
