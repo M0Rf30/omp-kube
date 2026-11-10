@@ -1,0 +1,3 @@
+#!/bin/sh
+# Attach to the pod's omp. Detach with Ctrl-\; omp redraws on attach.
+exec dtach -a "${OMP_SOCKET:-/tmp/omp.sock}" -r winch -z "$@"

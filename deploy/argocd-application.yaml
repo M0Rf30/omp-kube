@@ -1,0 +1,31 @@
+# Hands-off updates: the "omp bump" workflow releases a new chart (and image) for every
+# stable omp; ArgoCD follows the newest 0.x chart and rolls the pod. omp restarts with
+# --continue, so the session resumes; a turn running at that moment is interrupted.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: omp-agent
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: ghcr.io/m0rf30/charts
+    chart: omp-agent
+    # Semver range: always the newest release.
+    targetRevision: "0.*"
+    helm:
+      valuesObject:
+        omp:
+          existingSecret: omp-keys
+        # agentConfig:
+        #   git:
+        #     repo: https://github.com/M0Rf30/omp-config
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: omp
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

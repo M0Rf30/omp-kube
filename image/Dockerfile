@@ -1,4 +1,4 @@
-# omp agent box: omp + tmux (+ optional loopback sshd) for a long-lived pod.
+# omp agent box: omp under dtach (+ optional loopback sshd) for a long-lived pod.
 FROM debian:trixie-slim
 
 ARG OMP_VERSION=18.18.6
@@ -15,7 +15,7 @@ ENV LANG=C.UTF-8 \
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       bash ca-certificates curl git jq less openssh-client openssh-server \
-      procps python3 ripgrep tini tmux unzip xz-utils \
+      procps python3 ripgrep tini dtach unzip xz-utils \
  && rm -rf /var/lib/apt/lists/* \
  && rm -f /etc/ssh/ssh_host_* \
  && install -d -m 0755 /run/sshd
@@ -27,7 +27,7 @@ RUN curl -fsSL https://omp.sh/install \
 
 RUN useradd --uid "${AGENT_UID}" --user-group --create-home --home-dir /home/agent --shell /bin/bash agent
 
-COPY --chmod=0755 omp-pod /usr/local/bin/omp-pod
+COPY --chmod=0755 omp-pod omp-attach /usr/local/bin/
 
 USER ${AGENT_UID}
 WORKDIR /home/agent
