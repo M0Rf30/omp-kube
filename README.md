@@ -4,12 +4,12 @@ Run the [oh-my-pi](https://github.com/can1357/oh-my-pi) coding agent as a long-l
 
 | Path | Contents |
 |---|---|
-| `image/` | Debian image: omp (prebuilt, checksum-verified), git, tmux, ripgrep, python3, sshd; `omp-pod` entrypoint |
+| `image/` | Debian image: omp (prebuilt, checksum-verified), git, dtach, ripgrep, python3, sshd; `omp-pod` entrypoint, `omp-attach` |
 | `charts/omp-agent/` | Helm chart: single-replica StatefulSet with a persistent `/home/agent` |
 
 ## How it works
 
-- `omp-pod` starts `omp --continue` inside tmux, so after a pod restart the latest session resumes. Quitting omp restarts it after 5 s; press Enter instead to get a shell.
+- `omp-pod` starts `omp --continue` under dtach (a bare PTY holder: keys, images and colours pass through untouched), so after a pod restart the latest session resumes. Quitting omp restarts it after 5 s; press Enter instead to get a shell.
 - `omp.config` is mounted as a settings overlay (`PI_CONFIG_FILES`). The default `collab.autoStart: control` makes every interactive session host a Collab room through `wss://my.omp.sh` (end-to-end encrypted, content-blind relay). The pod opens no inbound ports.
 - `/home/agent` is a PVC: sessions, auth, memory, skills, repos and caches survive restarts. The PVC is retained on `helm uninstall`.
 - Hardening: no ServiceAccount token, non-root, all capabilities dropped, NetworkPolicy denies ingress and egress to private/link-local/CGNAT ranges (in-cluster services, cloud metadata).
@@ -24,11 +24,18 @@ helm install omp oci://ghcr.io/m0rf30/charts/omp-agent -n omp --set omp.existing
 
 Images (`ghcr.io/m0rf30/omp-agent:<omp version>`, amd64/arm64) and charts are built by CI and signed with cosign (keyless). The chart `appVersion` is the omp version: bumping it on `main` builds the matching image. A `v*` tag publishes the chart with that version. Local build: `docker build --build-arg OMP_VERSION=18.18.6 -t omp-agent image`. OAuth/subscription logins: `omp auth export` locally, then `kubectl exec -i … -- omp auth import < auth.json` (or `/login` in the TUI).
 
+## Staying on the latest omp (no interaction)
+
+1. **Releases:** `.github/workflows/omp-bump.yml` checks omp's stable channel every 3 hours. On a new version it bumps `appVersion` and the chart patch version, commits `build: bump omp to X`, tags `vX.Y.Z` and dispatches CI, which builds/signs the image and publishes the chart.
+2. **Rollout:** deploy with ArgoCD following the newest chart ([`deploy/argocd-application.yaml`](deploy/argocd-application.yaml), `targetRevision: "0.*"`, automated sync). New release → new image → pod restarts → `omp --continue` resumes the session. A turn running at that moment is interrupted.
+
+Without ArgoCD, `omp.autoUpdate: true` installs the latest stable omp into the home volume on every pod start instead (picked up on the next restart; not signed by this repo's CI).
+
 ## Access
 
 ```sh
 # TUI
-kubectl -n omp exec -it omp-omp-agent-0 -c omp -- tmux attach -t omp
+kubectl -n omp exec -it omp-omp-agent-0 -c omp -- omp-attach   # detach: Ctrl-\
 # Collab link for the browser / `omp join`
 kubectl -n omp exec omp-omp-agent-0 -c omp -- omp collab list
 kubectl -n omp exec omp-omp-agent-0 -c omp -- omp collab link <instanceId|pid>
@@ -43,7 +50,7 @@ kubectl -n omp create secret generic omp-tailscale --from-literal=TS_AUTHKEY=tsk
 helm upgrade omp charts/omp-agent -n omp --reuse-values \
   --set ssh.enabled=true --set-string 'ssh.authorizedKeys[0]=ssh-ed25519 AAAA… you@laptop' \
   --set tailscale.enabled=true --set tailscale.authKeySecret.name=omp-tailscale
-ssh -t agent@omp-agent tmux attach -t omp
+ssh -t agent@omp-agent omp-attach
 ```
 
 sshd listens on `127.0.0.1` only; the Tailscale sidecar (userspace mode, state on the PVC) forwards tailnet port 22 to it.
