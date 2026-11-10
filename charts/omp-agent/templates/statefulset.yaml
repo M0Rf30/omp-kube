@@ -76,7 +76,7 @@ spec:
         - name: omp
           image: {{ include "omp-agent.image" . | quote }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          # tmux needs a terminal for `kubectl exec -it … tmux attach`.
+          # Interactive container: `kubectl exec -it … omp-attach`.
           stdin: true
           tty: true
           env:
@@ -84,10 +84,10 @@ spec:
               value: /etc/omp-pod/config.yml
             - name: OMP_WORKDIR
               value: {{ .Values.omp.workdir | quote }}
-            - name: OMP_TMUX_SESSION
-              value: {{ .Values.omp.tmuxSession | quote }}
             - name: OMP_ARGS
               value: {{ join " " .Values.omp.args | quote }}
+            - name: OMP_AUTO_UPDATE
+              value: {{ .Values.omp.autoUpdate | toString | quote }}
             {{- include "omp-agent.syncEnv" . | nindent 12 }}
             {{- if .Values.ssh.enabled }}
             - name: SSHD_PORT

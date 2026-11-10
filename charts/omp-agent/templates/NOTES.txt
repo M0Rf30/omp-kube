@@ -1,9 +1,9 @@
 {{- $pod := printf "%s-0" (include "omp-agent.fullname" .) -}}
-omp runs in tmux session "{{ .Values.omp.tmuxSession }}" in pod {{ $pod }} (namespace {{ .Release.Namespace }}).
+omp runs under dtach in pod {{ $pod }} (namespace {{ .Release.Namespace }}).
 
 Attach to the TUI:
-  kubectl -n {{ .Release.Namespace }} exec -it {{ $pod }} -c omp -- tmux attach -t {{ .Values.omp.tmuxSession }}
-  (detach with Ctrl-b d; quitting omp restarts it after 5s unless you press Enter for a shell)
+  kubectl -n {{ .Release.Namespace }} exec -it {{ $pod }} -c omp -- omp-attach
+  (detach with Ctrl-\; quitting omp restarts it after 5s unless you press Enter for a shell)
 
 {{- if .Values.omp.existingSecret }}
 Provider credentials come from Secret "{{ .Values.omp.existingSecret }}".
@@ -27,12 +27,12 @@ Open the https link in a browser/phone, or from your laptop: omp join "<link>"
 {{- if .Values.tailscale.enabled }}
 
 SSH over the tailnet:
-  ssh -t agent@{{ .Values.tailscale.hostname }} tmux attach -t {{ .Values.omp.tmuxSession }}
+  ssh -t agent@{{ .Values.tailscale.hostname }} omp-attach
 {{- else }}
 
 SSH (loopback only) via port-forward:
   kubectl -n {{ .Release.Namespace }} port-forward {{ $pod }} 2222:{{ .Values.ssh.port }}
-  ssh -t -p 2222 agent@127.0.0.1 tmux attach -t {{ .Values.omp.tmuxSession }}
+  ssh -t -p 2222 agent@127.0.0.1 omp-attach
 {{- end }}
 {{- end }}
 

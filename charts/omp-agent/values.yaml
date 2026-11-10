@@ -13,13 +13,18 @@ fullnameOverride: ""
 omp:
   # -- Extra flags for the interactive omp, e.g. ["--model", "opus", "--thinking", "high"].
   args: []
+  # -- On every pod start, install the latest stable omp into ~/.local/bin (home volume) and
+  # prefer it over the image's pinned build. Unpinned and unsigned by this chart; a failed
+  # download falls back to the last installed or image version.
+  autoUpdate: false
   # -- Working directory omp starts in (inside the persistent home volume).
   workdir: /home/agent/workspace
-  # -- tmux session name holding omp.
-  tmuxSession: omp
   # -- Settings overlay loaded through PI_CONFIG_FILES (same keys as ~/.omp/agent/config.yml).
   # Overrides the persistent global config; /settings changes to these keys won't stick.
   config:
+    # Unattended pod: no onboarding prompts after upgrades.
+    startup:
+      setupWizard: false
     collab:
       # -- "control": every session hosts a full-control Collab room on start;
       # "view": read-only rooms; "off": run /collab by hand.
