@@ -1,7 +1,7 @@
 # omp agent box: omp under dtach (+ optional loopback sshd) for a long-lived pod.
 FROM debian:trixie-slim
 
-ARG OMP_VERSION=18.18.7
+ARG OMP_VERSION=18.18.8
 ARG AGENT_UID=1000
 
 LABEL org.opencontainers.image.source=https://github.com/M0Rf30/omp-kube \

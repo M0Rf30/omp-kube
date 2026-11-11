@@ -2,9 +2,9 @@ apiVersion: v2
 name: omp-agent
 description: Long-lived oh-my-pi (omp) coding agent in a pod; drive it from a browser, phone or your local omp through Collab, or attach to its terminal over Tailscale SSH.
 type: application
-version: 0.1.2
+version: 0.1.3
 # omp version baked into the image.
-appVersion: "18.18.7"
+appVersion: "18.18.8"
 kubeVersion: ">=1.28.0-0"
 keywords: [omp, oh-my-pi, coding-agent, ai, dtach, tailscale]
 home: https://github.com/M0Rf30/omp-kube
